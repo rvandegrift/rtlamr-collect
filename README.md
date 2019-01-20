@@ -36,6 +36,9 @@ Units for your particular meter may be defined through the use of the following 
  * `COLLECT_MULTIPLIER=10` Defines a multiplier for differential intervals.
  This allows the user to specify what units their meter is reporting. If it is undefined, the default is 10 in order to obtain Wh from meters that report kWh with two digits beyond the decimal.
 
+By default, all new data points are written to the `power` measurement in InfluxDB.  You can override this with the following environment variable:
+ * `COLLECT_INFLUXDB_IDM_MEASUREMENT=consumption`
+
 At a minimum rtlamr must have the following environment variables defined:
  * `RTLAMR_MSGTYPE=idm` Currently only idm packets are supported.
  * `RTLAMR_FORMAT=json` rtlamr-collect input must be json.
@@ -50,7 +53,7 @@ $ rtlamr | rtlamr-collect
 ### Behavior
 On startup, rtlamr-collect attempts to pre-load data from InfluxDB to avoid writing duplicate data points between instances.
 
-rtlamr-collect reads IDM packets serialized as json from stdin and for each message determines the transmit offset time and compares this with previously received messages to determine how many new data points (if any) are in the current message. All new data points are written to the `power` measurement in InfluxDB.
+rtlamr-collect reads IDM packets serialized as json from stdin and for each message determines the transmit offset time and compares this with previously received messages to determine how many new data points (if any) are in the current message.
 
 rtlamr-collect happily and gracefully collects and aggregates messages from as many meters as it sees on its input.
 

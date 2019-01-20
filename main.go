@@ -38,6 +38,8 @@ const (
 
 var multiplier float64
 
+var idmMeasurementName string
+
 type Message struct {
 	Time time.Time `json:"Time"`
 	IDM  IDM       `json:"Message"`
@@ -73,7 +75,7 @@ type Consumption struct {
 
 func (c Consumption) Fields(idx uint) map[string]interface{} {
 	return map[string]interface{}{
-		"consumption": float64(c.Usage[idx]),
+		idmMeasurementName: float64(c.Usage[idx]),
 	}
 }
 
@@ -99,7 +101,8 @@ func (c *Consumption) Update(msg Message) {
 type MeterMap map[uint32]Consumption
 
 func (mm MeterMap) Preload(c client.Client) {
-	q := client.NewQuery("SELECT * FROM power WHERE time > now() - 4h", "distinct", "ns")
+	query := fmt.Sprintf("SELECT * FROM %s WHERE time > now() - 4h", idmMeasurementName)
+	q := client.NewQuery(query, "distinct", "ns")
 	if res, err := c.Query(q); err == nil && res.Error() == nil {
 		for _, r := range res.Results {
 			for _, s := range r.Series {
@@ -160,6 +163,14 @@ func main() {
 		multiplier = 10.0
 	}
 
+	idmMeasurementEnv, ok := os.LookupEnv("COLLECT_INFLUXDB_IDM_MEASUREMENT_NAME")
+	if ok {
+		idmMeasurementName = idmMeasurementEnv
+	} else {
+		idmMeasurementName = "power"
+	}
+	log.Printf("using measurement name \"%s\"", idmMeasurementName)
+
 	log.Printf("connecting to %q@%q", username, fmt.Sprintf(host, hostname))
 	c, err := client.NewHTTPClient(client.HTTPConfig{
 		Addr:     fmt.Sprintf(host, hostname),
@@ -218,7 +229,7 @@ func main() {
 			}
 
 			pt, err := client.NewPoint(
-				"power",
+				idmMeasurementName,
 				idm.Tags(idx),
 				consumption.Fields(interval),
 				consumption.Time[interval],
