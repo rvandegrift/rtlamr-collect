@@ -193,8 +193,6 @@ func main() {
 		Precision: "s",
 	}
 
-	idmCRC := crc.NewCRC("CCITT", 0xFFFF, 0x1021, 0x1D0F)
-
 	mm := make(MeterMap)
 	mm.Preload(c)
 
@@ -207,10 +205,8 @@ func main() {
 		}
 		idm := msg.IDM
 
-		buf := make([]byte, 6)
-		binary.BigEndian.PutUint32(buf[:4], msg.IDM.EndPointID)
-		binary.BigEndian.PutUint16(buf[4:], msg.IDM.IDCRC)
-		if residue := idmCRC.Checksum(buf); residue != idmCRC.Residue {
+		if !checkIDMCRC(idm.EndPointID, idm.IDCRC) {
+			log.Println("Message failed checksum")
 			continue
 		}
 
@@ -253,4 +249,17 @@ func main() {
 			log.Println(err)
 		}
 	}
+}
+
+func checkIDMCRC(EndPointID uint32, IDCRC uint16) bool {
+	buf := make([]byte, 6)
+	idmCRC := crc.NewCRC("CCITT", 0xFFFF, 0x1021, 0x1D0F)
+
+	binary.BigEndian.PutUint32(buf[:4], EndPointID)
+	binary.BigEndian.PutUint16(buf[4:], IDCRC)
+	if residue := idmCRC.Checksum(buf); residue != idmCRC.Residue {
+		return false
+	}
+
+	return true
 }
