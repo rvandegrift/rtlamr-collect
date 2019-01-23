@@ -30,14 +30,13 @@ import (
 )
 
 const (
-	dbName = "rtlamr"
-	host   = "http://%s:8086"
+	host = "http://%s:8086"
 
 	threshold = 30 * time.Second
 )
 
 var multiplier float64
-
+var dbName string
 var idmMeasurementName string
 
 type Message struct {
@@ -162,6 +161,14 @@ func main() {
 	} else {
 		multiplier = 10.0
 	}
+
+	dbNameEnv, ok := os.LookupEnv("COLLECT_INFLUXDB_DATABASE")
+	if ok {
+		dbName = dbNameEnv
+	} else {
+		dbName = "rtlamr"
+	}
+	log.Printf("using database name \"%s\"", dbName)
 
 	idmMeasurementEnv, ok := os.LookupEnv("COLLECT_INFLUXDB_IDM_MEASUREMENT_NAME")
 	if ok {
