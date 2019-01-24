@@ -250,35 +250,51 @@ func main() {
 			continue
 		}
 
+		bp, err := client.NewBatchPoints(batchPointConfig)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		var points []*client.Point
 		if msg.Type == "SCM" {
 			log.Println("Received SCM message")
-			handleSCM(msg, c, batchPointConfig)
-			continue
+			points, err = handleSCM(msg)
+
 		} else if msg.Type == "IDM" {
 			log.Println("Received IDM message")
-			err := handleIDM(msg, mm, c, batchPointConfig)
-			if err != nil {
-				log.Println(err)
-			}
+			points, err = handleIDM(msg, mm)
+
 		} else {
 			log.Println("Ignoring unknown msg type %s", msg.Type)
+			continue
+		}
+
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		for pt := range points {
+			bp.AddPoint(points[pt])
+		}
+		err = c.Write(bp)
+		if err != nil {
+			log.Println(err)
 			continue
 		}
 	}
 }
 
-func handleIDM(msg Message, mm MeterMap, c client.Client, batchPointConfig client.BatchPointsConfig) (err error) {
+func handleIDM(msg Message, mm MeterMap) ([]*client.Point, error) {
 	var idm IDMMessage
 	tmp, _ := json.Marshal(&msg)
 	json.Unmarshal(tmp, &idm)
 
-	if !checkIDMCRC(idm.IDM.EndPointID, idm.IDM.IDCRC) {
-		return errors.New("Message failed checksum")
-	}
+	points := make([]*client.Point, 0)
 
-	bp, err := client.NewBatchPoints(batchPointConfig)
-	if err != nil {
-		return err
+	if !checkIDMCRC(idm.IDM.EndPointID, idm.IDM.IDCRC) {
+		return points, errors.New("Message failed checksum")
 	}
 
 	if _, exists := mm[idm.IDM.EndPointID]; !exists {
@@ -306,15 +322,11 @@ func handleIDM(msg Message, mm MeterMap, c client.Client, batchPointConfig clien
 		if err != nil {
 			log.Println(err)
 		} else {
-			bp.AddPoint(pt)
+			points = append(points, pt)
 		}
 	}
 
-	if err := c.Write(bp); err != nil {
-		log.Println(err)
-	}
-
-	return nil
+	return points, nil
 }
 
 func checkIDMCRC(EndPointID uint32, IDCRC uint16) bool {
@@ -330,32 +342,19 @@ func checkIDMCRC(EndPointID uint32, IDCRC uint16) bool {
 	return true
 }
 
-func handleSCM(msg Message, c client.Client, batchPointConfig client.BatchPointsConfig) error {
+func handleSCM(msg Message) ([]*client.Point, error) {
 	var scm SCMMessage
 	tmp, _ := json.Marshal(&msg)
 	json.Unmarshal(tmp, &scm)
 
-	bp, err := client.NewBatchPoints(batchPointConfig)
-	if err != nil {
-		return err
-	}
-
+	points := make([]*client.Point, 0, 1)
 	pt, err := client.NewPoint(
 		scmMeasurementName,
 		scm.SCM.Tags(),
 		scm.SCM.Fields(),
 		scm.Time,
 	)
+	points = append(points, pt)
 
-	if err != nil {
-		log.Println(err)
-	} else {
-		bp.AddPoint(pt)
-	}
-
-	if err := c.Write(bp); err != nil {
-		log.Println(err)
-	}
-
-	return nil
+	return points, err
 }
