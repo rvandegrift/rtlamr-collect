@@ -19,6 +19,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -38,10 +39,24 @@ const (
 var multiplier float64
 var dbName string
 var idmMeasurementName string
+var scmMeasurementName string
 
 type Message struct {
+	Time    time.Time   `json:"Time"`
+	Type    string      `json:"Type"`
+	Message interface{} `json:"Message"`
+}
+
+type IDMMessage struct {
 	Time time.Time `json:"Time"`
+	Type string    `json:"Type"`
 	IDM  IDM       `json:"Message"`
+}
+
+type SCMMessage struct {
+	Time time.Time `json:"Time"`
+	Type string    `json:"Type"`
+	SCM  SCM       `json:"Message"`
 }
 
 type IDM struct {
@@ -55,7 +70,8 @@ type IDM struct {
 
 func (idm IDM) Tags(idx int) map[string]string {
 	return map[string]string{
-		"endpoint_id": strconv.Itoa(int(idm.EndPointID)),
+		"endpoint_id":   strconv.Itoa(int(idm.EndPointID)),
+		"endpoint_type": strconv.Itoa(int(idm.EndPointType)),
 	}
 }
 
@@ -63,6 +79,28 @@ func (idm IDM) Fields(idx int) map[string]interface{} {
 	return map[string]interface{}{
 		"consumption": float64(idm.Intervals[idx]) * 10,
 		"interval":    int64(uint(int(idm.IntervalCount)-idx) % 256),
+	}
+}
+
+type SCM struct {
+	EndPointType byte   `json:"Type"`
+	EndPointID   uint32 `json:"ID"`
+	TamperPhy    byte   `json:"TamperPhy"`
+	TamperEnc    byte   `json:"TamperEnc"`
+	Consumption  uint32 `json:"Consumption"`
+	ChecksumVal  uint16 `json:"ChecksumVal"`
+}
+
+func (scm SCM) Tags() map[string]string {
+	return map[string]string{
+		"endpoint_id":   strconv.Itoa(int(scm.EndPointID)),
+		"endpoint_type": strconv.Itoa(int(scm.EndPointType)),
+	}
+}
+
+func (scm SCM) Fields() map[string]interface{} {
+	return map[string]interface{}{
+		"consumption": float64(scm.Consumption),
 	}
 }
 
@@ -78,7 +116,7 @@ func (c Consumption) Fields(idx uint) map[string]interface{} {
 	}
 }
 
-func (c *Consumption) Update(msg Message) {
+func (c *Consumption) Update(msg IDMMessage) {
 	for idx := range c.New {
 		c.New[idx] = false
 	}
@@ -176,7 +214,15 @@ func main() {
 	} else {
 		idmMeasurementName = "power"
 	}
-	log.Printf("using measurement name \"%s\"", idmMeasurementName)
+	log.Printf("using measurement name \"%s\" for IDM", idmMeasurementName)
+
+	scmMeasurementEnv, ok := os.LookupEnv("COLLECT_INFLUXDB_SCM_MEASUREMENT_NAME")
+	if ok {
+		scmMeasurementName = scmMeasurementEnv
+	} else {
+		scmMeasurementName = "power"
+	}
+	log.Printf("using measurement name \"%s\" for SCM", scmMeasurementName)
 
 	log.Printf("connecting to %q@%q", username, fmt.Sprintf(host, hostname))
 	c, err := client.NewHTTPClient(client.HTTPConfig{
@@ -203,52 +249,72 @@ func main() {
 			log.Println(err)
 			continue
 		}
-		idm := msg.IDM
 
-		if !checkIDMCRC(idm.EndPointID, idm.IDCRC) {
-			log.Println("Message failed checksum")
+		if msg.Type == "SCM" {
+			log.Println("Received SCM message")
+			handleSCM(msg, c, batchPointConfig)
 			continue
-		}
-
-		bp, err := client.NewBatchPoints(batchPointConfig)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-
-		if _, exists := mm[idm.EndPointID]; !exists {
-			mm[idm.EndPointID] = Consumption{}
-		}
-
-		consumption := mm[idm.EndPointID]
-		consumption.Update(msg)
-		mm[idm.EndPointID] = consumption
-
-		for idx := range idm.Intervals {
-			interval := uint(int(msg.IDM.IntervalCount)-idx) % 256
-
-			if !consumption.New[interval] {
-				continue
-			}
-
-			pt, err := client.NewPoint(
-				idmMeasurementName,
-				idm.Tags(idx),
-				consumption.Fields(interval),
-				consumption.Time[interval],
-			)
-
+		} else if msg.Type == "IDM" {
+			log.Println("Received IDM message")
+			err := handleIDM(msg, mm, c, batchPointConfig)
 			if err != nil {
 				log.Println(err)
-			} else {
-				bp.AddPoint(pt)
 			}
-		}
-
-		if err := c.Write(bp); err != nil {
-			log.Println(err)
+		} else {
+			log.Println("Ignoring unknown msg type %s", msg.Type)
+			continue
 		}
 	}
+}
+
+func handleIDM(msg Message, mm MeterMap, c client.Client, batchPointConfig client.BatchPointsConfig) (err error) {
+	var idm IDMMessage
+	tmp, _ := json.Marshal(&msg)
+	json.Unmarshal(tmp, &idm)
+
+	if !checkIDMCRC(idm.IDM.EndPointID, idm.IDM.IDCRC) {
+		return errors.New("Message failed checksum")
+	}
+
+	bp, err := client.NewBatchPoints(batchPointConfig)
+	if err != nil {
+		return err
+	}
+
+	if _, exists := mm[idm.IDM.EndPointID]; !exists {
+		mm[idm.IDM.EndPointID] = Consumption{}
+	}
+
+	consumption := mm[idm.IDM.EndPointID]
+	consumption.Update(idm)
+	mm[idm.IDM.EndPointID] = consumption
+
+	for idx := range idm.IDM.Intervals {
+		interval := uint(int(idm.IDM.IntervalCount)-idx) % 256
+
+		if !consumption.New[interval] {
+			continue
+		}
+
+		pt, err := client.NewPoint(
+			idmMeasurementName,
+			idm.IDM.Tags(idx),
+			consumption.Fields(interval),
+			consumption.Time[interval],
+		)
+
+		if err != nil {
+			log.Println(err)
+		} else {
+			bp.AddPoint(pt)
+		}
+	}
+
+	if err := c.Write(bp); err != nil {
+		log.Println(err)
+	}
+
+	return nil
 }
 
 func checkIDMCRC(EndPointID uint32, IDCRC uint16) bool {
@@ -262,4 +328,34 @@ func checkIDMCRC(EndPointID uint32, IDCRC uint16) bool {
 	}
 
 	return true
+}
+
+func handleSCM(msg Message, c client.Client, batchPointConfig client.BatchPointsConfig) error {
+	var scm SCMMessage
+	tmp, _ := json.Marshal(&msg)
+	json.Unmarshal(tmp, &scm)
+
+	bp, err := client.NewBatchPoints(batchPointConfig)
+	if err != nil {
+		return err
+	}
+
+	pt, err := client.NewPoint(
+		scmMeasurementName,
+		scm.SCM.Tags(),
+		scm.SCM.Fields(),
+		scm.Time,
+	)
+
+	if err != nil {
+		log.Println(err)
+	} else {
+		bp.AddPoint(pt)
+	}
+
+	if err := c.Write(bp); err != nil {
+		log.Println(err)
+	}
+
+	return nil
 }
